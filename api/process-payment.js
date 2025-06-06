@@ -1,48 +1,82 @@
-import Stripe from 'stripe';
+require('dotenv').config();
+const express = require('express');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const app = express();
+const cors = require('cors');
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const PORT = process.env.PORT || 3000;
 
-export default async function handler(req, res) {
-  // Habilitar CORS
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+app.use(express.json());
 
-  // Manejo especial para preflight (CORS OPTIONS)
+// Middleware CORS manual
+app.use((req, res, next) => {
+  // Configura los headers CORS
+  res.setHeader('Access-Control-Allow-Origin', '*'); // Específica tu origen Angular
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', 'true'); // Si usas cookies/sesión
+  
+  // Manejo de solicitudes OPTIONS (preflight)
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
+  
+  next();
+});
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Método no permitido' });
-  }
 
-  const { paymentMethodId } = req.body;
+app.post('/create-checkout-session', async (req, res) => {
+    try {
+        const { priceId } = req.body;  // Recibe el Price ID del frontend
 
-  try {
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: 1000,
-      currency: 'mxn',
-      payment_method: paymentMethodId,
-      confirm: true,
-      automatic_payment_methods: {
-        enabled: true,
-        allow_redirects: 'never'
-      }
-    });
+        console.log(priceId);
 
-    if (paymentIntent.status === 'requires_action') {
-      res.json({
-        requiresAction: true,
-        clientSecret: paymentIntent.client_secret,
-      });
-    } else if (paymentIntent.status === 'succeeded') {
-      res.json({ success: true });
-    } else {
-      res.status(400).json({ success: false, error: 'El pago no fue exitoso' });
+        if (!priceId) {
+            return res.status(400).json({ error: "Se requiere un Price ID" });
+        }
+
+        // Crea la sesión con el Price ID recibido
+        const session = await stripe.checkout.sessions.create({
+            ui_mode: 'embedded',
+            payment_method_types: ['card'],
+            line_items: [{
+                price: priceId,
+                quantity: 1,
+            }],
+            mode: 'payment',
+            return_url: `${req.headers.origin}/success?session_id={CHECKOUT_SESSION_ID}`,
+        });
+
+        res.json({
+            sessionId: session.id,
+            clientSecret: session.client_secret
+        });
+
+    } catch (error) {
+        console.error('Error:', error);
     }
-  } catch (error) {
-    console.error('Error al procesar el pago:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-}
+});
+
+// Ruta para verificar el estado de la sesión (para la página de retorno)
+app.get('/session-status', async (req, res) => {
+    const { session_id } = req.query;
+
+    try {
+        const session = await stripe.checkout.sessions.retrieve(session_id);
+        res.json({
+            status: session.status,
+            customer_email: session.customer_details?.email
+        });
+    } catch (error) {
+        console.error('Error al verificar el estado de la sesión:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Sirve archivos estáticos
+app.use(express.static('public'));
+
+// Inicia el servidor
+app.listen(PORT, () => {
+    console.log(`Servidor corriendo en http://localhost:${PORT}`);
+});
