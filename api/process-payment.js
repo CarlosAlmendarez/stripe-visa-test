@@ -1,82 +1,57 @@
-require('dotenv').config();
-const express = require('express');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const app = express();
-const cors = require('cors');
+// api/create‐checkout‐session.js
 
-const PORT = process.env.PORT || 3000;
+// No necesitamos express aquí; basta con un handler que reciba req, res.
+// Requerimos Stripe y lo inicializamos con la variable de entorno.
+const Stripe = require('stripe');
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-app.use(express.json());
-
-// Middleware CORS manual
-app.use((req, res, next) => {
-  // Configura los headers CORS
-  res.setHeader('Access-Control-Allow-Origin', '*'); // Específica tu origen Angular
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+/**
+ * Función handler para crear la sesión de Checkout.
+ * Vercel invocará esto cuando reciba una petición a /api/create‐checkout‐session.
+ */
+module.exports = async (req, res) => {
+  // 1) Configuramos CORS de forma manual:
+  res.setHeader('Access-Control-Allow-Origin', '*'); 
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Credentials', 'true'); // Si usas cookies/sesión
-  
-  // Manejo de solicitudes OPTIONS (preflight)
+  // Si viene un preflight (OPTIONS), respondemos 200 y terminamos:
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
-  
-  next();
-});
 
+  // Solo permitimos método POST:
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST, OPTIONS');
+    return res.status(405).json({ error: 'Método no permitido' });
+  }
 
-app.post('/create-checkout-session', async (req, res) => {
-    try {
-        const { priceId } = req.body;  // Recibe el Price ID del frontend
-
-        console.log(priceId);
-
-        if (!priceId) {
-            return res.status(400).json({ error: "Se requiere un Price ID" });
-        }
-
-        // Crea la sesión con el Price ID recibido
-        const session = await stripe.checkout.sessions.create({
-            ui_mode: 'embedded',
-            payment_method_types: ['card'],
-            line_items: [{
-                price: priceId,
-                quantity: 1,
-            }],
-            mode: 'payment',
-            return_url: `${req.headers.origin}/success?session_id={CHECKOUT_SESSION_ID}`,
-        });
-
-        res.json({
-            sessionId: session.id,
-            clientSecret: session.client_secret
-        });
-
-    } catch (error) {
-        console.error('Error:', error);
+  try {
+    // Parseamos el body como JSON (Vercel ya hace JSON.parse automáticamente).
+    const { priceId } = req.body;
+    if (!priceId) {
+      return res.status(400).json({ error: "Se requiere un priceId en el body" });
     }
-});
 
-// Ruta para verificar el estado de la sesión (para la página de retorno)
-app.get('/session-status', async (req, res) => {
-    const { session_id } = req.query;
+    // Creamos la sesión de Checkout en Stripe:
+    const session = await stripe.checkout.sessions.create({
+      ui_mode: 'embedded',
+      payment_method_types: ['card'],
+      line_items: [{
+        price: priceId,
+        quantity: 1,
+      }],
+      mode: 'payment',
+      // IMPORTANTE: Vercel no es localhost, así que generamos la return_url dinámicamente
+      return_url: `${req.headers.origin}/success?session_id={CHECKOUT_SESSION_ID}`,
+    });
 
-    try {
-        const session = await stripe.checkout.sessions.retrieve(session_id);
-        res.json({
-            status: session.status,
-            customer_email: session.customer_details?.email
-        });
-    } catch (error) {
-        console.error('Error al verificar el estado de la sesión:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Sirve archivos estáticos
-app.use(express.static('public'));
-
-// Inicia el servidor
-app.listen(PORT, () => {
-    console.log(`Servidor corriendo en http://localhost:${PORT}`);
-});
+    // Enviamos de vuelta el ID de sesión y el client_secret
+    return res.status(200).json({
+      sessionId: session.id,
+      clientSecret: session.client_secret,
+    });
+  } catch (err) {
+    console.error('Error en create‐checkout‐session:', err);
+    return res.status(500).json({ error: err.message });
+  }
+};
